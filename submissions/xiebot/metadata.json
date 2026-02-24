@@ -1,0 +1,9 @@
+{
+  "team_name": "xiebot",
+  "display_name": "xiebot",
+  "agent_class": "XieBot",
+  "agent_file": "XieBot.java",
+  "model_provider": "none",
+  "model_name": "none",
+  "description": "modified NaiveMCTS agent that uses an early LightRush opening strategy and adaptive search budgeting to improve decision making during gameplay"
+}
