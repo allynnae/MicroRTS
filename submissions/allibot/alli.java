@@ -1,19 +1,25 @@
 /*
- * This is a modified version of Mayari. Below is a summary of the changes made.
+ * AlliBot (Search+LLM + Rule Fallback)
  *
- * 1) Updated damage tracking
+ * How this agent works:
+ * 1) Primary policy: use LLMInformedMCTS (Search+LLM) to choose actions.
+ *    - Search: Monte Carlo Tree Search explores tactical futures.
+ *    - LLM: policy priors and strategic goals bias the search.
+ * 2) Safety policy: if Search+LLM fails or returns no concrete action,
+ *    immediately fall back to original rule-based behavior in this file.
  *
- * 2) Updated action legality check
- *
- * 3) Added base-under-threat behavior:
- *    - workers can defend sooner
- *    - fewer harvesters under pressure
- *    - barracks prioritize ranged while defending
+ * General Flow:
+ * 1) Game calls getAction() at 1410.
+ * 2) Try Search+LLM first via trySearchLLMAction() at 1341.
+ * 3) If Search+LLM returns a real action, use it immediately.
+ * 4) If search is disabled, skipped, fails, or returns no real move, fallback to getRuleBasedAction() at 1366.
+ * 5) Fallback runs the original pre-LLM rule-based logic.
  */
 
 package ai.abstraction.submissions.allibot;
 
 import ai.abstraction.pathfinding.AStarPathFinding;
+import ai.mcts.llmguided.LLMInformedMCTS;
 import ai.core.AI;
 import ai.core.AIWithComputationBudget;
 import ai.core.ParameterSpecification;
@@ -105,6 +111,22 @@ public class alli extends AIWithComputationBudget {
     List<Unit> _all;    
     HashMap<Unit, Integer> _newDmgs;
 
+    // Enable/disable Search+LLM at runtime without code changes.
+    // Example: set ALLI_USE_SEARCH_LLM=false to force pure rule-based mode.
+    private static final boolean USE_SEARCH_LLM =
+            Boolean.parseBoolean(System.getenv().getOrDefault("ALLI_USE_SEARCH_LLM", "true"));
+
+    // How many game ticks to wait between Search+LLM calls.
+    // 1 means "try Search+LLM every tick" (recommended for full Search+LLM mode).
+    private static final int SEARCH_LLM_INTERVAL =
+            Integer.parseInt(System.getenv().getOrDefault("ALLI_SEARCH_INTERVAL", "1"));
+
+    // Search+LLM delegate used as the primary decision engine.
+    private final LLMInformedMCTS _searchAgent;
+
+    // Tracks when search last ran so interval control is easy to reason about.
+    private int _lastSearchTick = -9999;
+
     public void restartPathFind() {
         _astarPath = new AStarPathFinding();
     }
@@ -194,9 +216,12 @@ public class alli extends AIWithComputationBudget {
         return astarMove;
     }
 
+    // Constructor to create search agent
     public alli(UnitTypeTable utt) {
         super(-1, -1);
         _utt = utt;
+        // Initialize Search+LLM delegate once and reuse it.
+        _searchAgent = new LLMInformedMCTS(utt);
         restartPathFind(); //FloodFillPathFinding(); //AStarPathFinding();
         _memHarvesters = new ArrayList<>();
                 
@@ -209,6 +234,9 @@ public class alli extends AIWithComputationBudget {
     @Override
     public void reset() {
         _memHarvesters = new ArrayList<>();
+        _lastSearchTick = -9999;
+        // Reset internal tree/cache state in the Search+LLM delegate.
+        _searchAgent.reset();
         restartPathFind(); //FloodFillPathFinding();//BFSPathFinding();//AStarPathFinding();
     }
     @Override
@@ -1293,9 +1321,49 @@ public class alli extends AIWithComputationBudget {
                 tryMoveAway(u, u);
         }
     }
-    
-    @Override
-    public PlayerAction getAction(int player, GameState gs) throws Exception {
+
+    /*
+     * Decide whether Search+LLM should run on this tick.
+     * This lets us tune cost/performance by environment variable.
+     */
+    boolean shouldUseSearchThisTick(int gameTick) {
+        if (!USE_SEARCH_LLM)
+            return false;
+        if (SEARCH_LLM_INTERVAL <= 1)
+            return true;
+        return gameTick - _lastSearchTick >= SEARCH_LLM_INTERVAL;
+    }
+
+    /*
+     * Try to get a Search+LLM action.
+     * Returns null when search is skipped, fails, or gives no concrete command.
+     */
+    PlayerAction trySearchLLMAction(int player, GameState gs) {
+        if (!shouldUseSearchThisTick(gs.getTime()))
+            return null;
+
+        try {
+            // Primary decision engine: MCTS guided by LLM priors and goals.
+            PlayerAction searchAction = _searchAgent.getAction(player, gs);
+            _lastSearchTick = gs.getTime();
+
+            // If search returns only TYPE_NONE actions, use rule-based fallback.
+            if (searchAction == null || !searchAction.hasNonNoneActions())
+                return null;
+            return searchAction;
+        } catch (Exception ex) {
+            // Keep failures non-fatal; fallback logic still plays the game.
+            System.err.println("[alli] Search+LLM failed at t=" + gs.getTime() +
+                    ", falling back to rules. Reason: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    /*
+     * Original Alli rule-based policy.
+     * This is intentionally preserved as a robust fallback.
+     */
+    PlayerAction getRuleBasedAction(int player, GameState gs) throws Exception {
         _gs = gs;
         _pgs = gs.getPhysicalGameState();
          _p = gs.getPlayer(player);
@@ -1331,5 +1399,21 @@ public class alli extends AIWithComputationBudget {
         
         _pa.fillWithNones(gs, player, 1);
         return _pa;
+    }
+
+    /*
+     * Main entry point.
+     * 1) Try Search+LLM first.
+     * 2) If unavailable/empty/error, fallback to original rules.
+     */
+    @Override
+    public PlayerAction getAction(int player, GameState gs) throws Exception {
+        // Search+LLM first to preserve the stronger leaderboard architecture.
+        PlayerAction searchAction = trySearchLLMAction(player, gs);
+        if (searchAction != null)
+            return searchAction;
+
+        // Safe fallback keeps bot behavior reliable in all environments.
+        return getRuleBasedAction(player, gs);
     }
 }   
