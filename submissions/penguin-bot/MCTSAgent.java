@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -62,6 +63,8 @@ public class MCTSAgent extends NaiveMCTS {
             System.getenv().getOrDefault("OLLAMA_HOST", "http://localhost:11434");
     private static final String MODEL =
             System.getenv().getOrDefault("OLLAMA_MODEL", "llama3.1:8b");
+    private static final String FALLBACK_MODELS_CSV =
+            System.getenv().getOrDefault("OLLAMA_FALLBACK_MODELS", "llama3.2:3b,mistral:7b,qwen2.5:7b");
     private static final Pattern JSON_OBJECT = Pattern.compile("\\{.*\\}", Pattern.DOTALL);
 
     private final UnitTypeTable utt;
@@ -77,6 +80,7 @@ public class MCTSAgent extends NaiveMCTS {
     private String preferredUnit = "RANGED";
     private String preferredReason = "Defensive opening";
     private Set<String> preferredActions = new HashSet<>();
+    private String resolvedOllamaModel = null;
 
     public MCTSAgent(UnitTypeTable utt) {
         super(120, -1, 105, 10,
@@ -339,6 +343,18 @@ public class MCTSAgent extends NaiveMCTS {
     }
 
     private String callOllama(String prompt) throws Exception {
+        String model = getResolvedOllamaModel();
+        try {
+            return callOllamaWithModel(model, prompt);
+        } catch (Exception e) {
+            String fallback = pickFallbackModel(model);
+            if (fallback.equals(model)) throw e;
+            resolvedOllamaModel = fallback;
+            return callOllamaWithModel(fallback, prompt);
+        }
+    }
+
+    private String callOllamaWithModel(String model, String prompt) throws Exception {
         URL url = new URL(OLLAMA_HOST + "/api/generate");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
@@ -348,7 +364,7 @@ public class MCTSAgent extends NaiveMCTS {
         conn.setRequestProperty("Content-Type", "application/json");
 
         JsonObject body = new JsonObject();
-        body.addProperty("model", MODEL);
+        body.addProperty("model", model);
         body.addProperty("prompt", prompt);
         body.addProperty("stream", false);
 
@@ -356,13 +372,106 @@ public class MCTSAgent extends NaiveMCTS {
             os.write(body.toString().getBytes(StandardCharsets.UTF_8));
         }
 
+        int status = conn.getResponseCode();
+        InputStream stream = status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream();
+        if (stream == null) throw new RuntimeException("Ollama HTTP " + status + " with empty response");
+
         byte[] raw;
-        try (InputStream is = conn.getInputStream()) {
+        try (InputStream is = stream) {
             raw = readFully(is);
         }
         String envelope = new String(raw, StandardCharsets.UTF_8);
+        if (status < 200 || status >= 300) {
+            throw new RuntimeException("Ollama HTTP " + status + ": " + envelope);
+        }
         JsonObject root = JsonParser.parseString(envelope).getAsJsonObject();
         return root.has("response") ? root.get("response").getAsString() : envelope;
+    }
+
+    private String getResolvedOllamaModel() {
+        if (resolvedOllamaModel != null && !resolvedOllamaModel.isEmpty()) return resolvedOllamaModel;
+
+        List<String> installed = listInstalledOllamaModels();
+        if (installed.isEmpty()) {
+            resolvedOllamaModel = MODEL;
+            return resolvedOllamaModel;
+        }
+
+        for (String candidate : getModelCandidates()) {
+            String found = findInstalledModelName(installed, candidate);
+            if (found != null) {
+                resolvedOllamaModel = found;
+                return resolvedOllamaModel;
+            }
+        }
+
+        resolvedOllamaModel = installed.get(0);
+        return resolvedOllamaModel;
+    }
+
+    private String pickFallbackModel(String failedModel) {
+        List<String> installed = listInstalledOllamaModels();
+        if (installed.isEmpty()) return failedModel;
+
+        for (String candidate : getModelCandidates()) {
+            if (candidate.equalsIgnoreCase(failedModel)) continue;
+            String found = findInstalledModelName(installed, candidate);
+            if (found != null) return found;
+        }
+
+        for (String installedModel : installed) {
+            if (!installedModel.equalsIgnoreCase(failedModel)) return installedModel;
+        }
+        return failedModel;
+    }
+
+    private List<String> getModelCandidates() {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (MODEL != null && !MODEL.trim().isEmpty()) out.add(MODEL.trim());
+        for (String raw : FALLBACK_MODELS_CSV.split(",")) {
+            String m = raw.trim();
+            if (!m.isEmpty()) out.add(m);
+        }
+        return new ArrayList<>(out);
+    }
+
+    private String findInstalledModelName(List<String> installed, String candidate) {
+        if (candidate == null || candidate.trim().isEmpty()) return null;
+        for (String modelName : installed) {
+            if (candidate.equalsIgnoreCase(modelName)) return modelName;
+        }
+        return null;
+    }
+
+    private List<String> listInstalledOllamaModels() {
+        List<String> models = new ArrayList<>();
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(OLLAMA_HOST + "/api/tags");
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(1200);
+            conn.setReadTimeout(1800);
+
+            int status = conn.getResponseCode();
+            if (status < 200 || status >= 300) return models;
+
+            try (InputStream is = conn.getInputStream()) {
+                JsonObject root = JsonParser.parseString(new String(readFully(is), StandardCharsets.UTF_8)).getAsJsonObject();
+                if (!root.has("models") || !root.get("models").isJsonArray()) return models;
+                for (JsonElement e : root.getAsJsonArray("models")) {
+                    if (!e.isJsonObject()) continue;
+                    JsonObject obj = e.getAsJsonObject();
+                    if (!obj.has("name")) continue;
+                    String name = obj.get("name").getAsString();
+                    if (name != null && !name.trim().isEmpty()) models.add(name.trim());
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return models;
     }
 
     private byte[] readFully(InputStream is) throws Exception {
