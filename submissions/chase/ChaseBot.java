@@ -11,6 +11,9 @@ import rts.*;
 import rts.units.*;
 import util.Pair;
 import java.util.*;
+import java.io.*;
+import java.net.*;
+import com.google.gson.*;
 
 
 
@@ -54,6 +57,17 @@ public class ChaseBot extends AIWithComputationBudget {
     private double attackMomentum = 0.0;
     private double militaryMomentum = 0.0;
 
+    // LLM integration (GPT-5 via Ollama proxy)
+    private static final String OLLAMA_HOST =
+            System.getenv().getOrDefault("OLLAMA_HOST", "http://localhost:11434");
+    private static final String OLLAMA_MODEL =
+            System.getenv().getOrDefault("OLLAMA_MODEL", "gpt-5");
+    private static final int LLM_CONSULT_INTERVAL = 200;
+    private int lastLLMConsultTick = -999;
+    private double llmAttackBias = 0.0;
+    private double llmMilitaryBias = 0.0;
+    private String llmUnitPreference = "balanced";
+
     public ChaseBot(AwareAI[][] s, int timeBudget, int iterationsBudget, UnitTypeTable utt) {
         super(timeBudget, iterationsBudget);
         this.localUtt = utt;
@@ -80,6 +94,10 @@ public class ChaseBot extends AIWithComputationBudget {
         mainBase = null;
         enemyBase = null;
         closestEnemy = null;
+        lastLLMConsultTick = -999;
+        llmAttackBias = 0.0;
+        llmMilitaryBias = 0.0;
+        llmUnitPreference = "balanced";
     }
 
     @Override
@@ -121,6 +139,7 @@ public class ChaseBot extends AIWithComputationBudget {
 
         updateUnitDistribution(player, gs);
         refreshMapDistances(player, gs);
+        consultLLM(player, gs);
 
         AwareAI macroStrategy = getMacroStrategy(player, gs);
         calibrateStrategy(macroStrategy, gs, player);
@@ -162,7 +181,8 @@ public class ChaseBot extends AIWithComputationBudget {
                         + (canReachEnemy ? 1.0 : -1.0)
                         + (enemyCollapsed ? 3.0 : 0.0)
                         + (underThreat ? -3.0 : 0.0)
-                        + (playerUnits[IDX_BASE] == 0 ? -2.0 : 0.0);
+                        + (playerUnits[IDX_BASE] == 0 ? -2.0 : 0.0)
+                        + llmAttackBias;
 
         double militaryScore =
                 (resources >= resourceThreshold ? 2.0 : -1.0)
@@ -170,7 +190,8 @@ public class ChaseBot extends AIWithComputationBudget {
                         + (enemyMilitary > 0 ? 1.2 : 0.0)
                         + (mapMaxSize >= 24 ? 0.6 : 0.0)
                         + (playerUnits[IDX_WORKER] <= 1 ? -2.5 : 0.0)
-                        + (playerUnits[IDX_BASE] == 0 ? -4.0 : 0.0);
+                        + (playerUnits[IDX_BASE] == 0 ? -4.0 : 0.0)
+                        + llmMilitaryBias;
 
         attackMomentum = 0.70 * attackMomentum + 0.30 * attackScore;
         militaryMomentum = 0.70 * militaryMomentum + 0.30 * militaryScore;
@@ -267,6 +288,15 @@ public class ChaseBot extends AIWithComputationBudget {
 
         if (playerUnits[IDX_BARRACKS] == 0) {
             units[IDX_HEAVY - 1] += 1;
+        }
+
+        // Apply LLM unit preference
+        if ("light".equals(llmUnitPreference)) {
+            units[IDX_LIGHT - 1] += 2;
+        } else if ("heavy".equals(llmUnitPreference)) {
+            units[IDX_HEAVY - 1] += 2;
+        } else if ("ranged".equals(llmUnitPreference)) {
+            units[IDX_RANGED - 1] += 2;
         }
 
         return units;
@@ -413,6 +443,126 @@ public class ChaseBot extends AIWithComputationBudget {
         }
 
         return closestDistance == Integer.MAX_VALUE ? -1 : closestDistance;
+    }
+
+    // ========== LLM Strategic Consultation (GPT-5) ==========
+
+    private void consultLLM(int player, GameState gs) {
+        int currentTick = gs.getTime();
+        if (currentTick - lastLLMConsultTick < LLM_CONSULT_INTERVAL) return;
+        lastLLMConsultTick = currentTick;
+
+        try {
+            String prompt = buildLLMPrompt(player, gs);
+            String response = queryOllamaAPI(prompt);
+            if (response != null) {
+                parseLLMAdvice(response);
+            }
+        } catch (Exception e) {
+            // LLM failure is non-fatal; keep using existing bias values
+            System.err.println("[ChaseBot] LLM consultation failed: " + e.getMessage());
+        }
+    }
+
+    private String buildLLMPrompt(int player, GameState gs) {
+        PhysicalGameState pgs = gs.getPhysicalGameState();
+        int maxCycles = 5000;
+        int resources = gs.getPlayer(player).getResources();
+        String pathStatus = realBaseToEnemy >= 0
+                ? "open (distance " + realBaseToEnemy + ")"
+                : "blocked";
+
+        return "You are a strategic advisor for an RTS game. Analyze this game state and recommend strategy.\n\n" +
+                "Map: " + pgs.getWidth() + "x" + pgs.getHeight() +
+                ", Turn: " + gs.getTime() + "/" + maxCycles + "\n" +
+                "My units: Workers=" + playerUnits[IDX_WORKER] +
+                ", Light=" + playerUnits[IDX_LIGHT] +
+                ", Heavy=" + playerUnits[IDX_HEAVY] +
+                ", Ranged=" + playerUnits[IDX_RANGED] +
+                ", Bases=" + playerUnits[IDX_BASE] +
+                ", Barracks=" + playerUnits[IDX_BARRACKS] + "\n" +
+                "Enemy units: Workers=" + enemyUnits[IDX_WORKER] +
+                ", Light=" + enemyUnits[IDX_LIGHT] +
+                ", Heavy=" + enemyUnits[IDX_HEAVY] +
+                ", Ranged=" + enemyUnits[IDX_RANGED] +
+                ", Bases=" + enemyUnits[IDX_BASE] +
+                ", Barracks=" + enemyUnits[IDX_BARRACKS] + "\n" +
+                "My resources: " + resources + "\n" +
+                "Closest enemy to my base: " + enemyToPlayerBase + " tiles\n" +
+                "My closest unit to enemy base: " + playerToEnemyBase + " tiles\n" +
+                "Path to enemy: " + pathStatus + "\n\n" +
+                "Unit counters: Light(fast) beats Ranged, Heavy(tanky) beats Light, Ranged(range 3) beats Heavy.\n" +
+                "Workers cost 1, Light cost 2, Heavy cost 3, Ranged cost 2. Barracks cost 5.\n\n" +
+                "Respond in JSON only:\n" +
+                "{\"thinking\":\"brief analysis\",\"attack_bias\":<float -3.0 to 3.0>,\"military_bias\":<float -3.0 to 3.0>,\"unit_preference\":\"light|heavy|ranged|balanced\"}\n" +
+                "attack_bias: positive=attack aggressively, negative=defend and build up\n" +
+                "military_bias: positive=prioritize military training, negative=prioritize economy\n" +
+                "unit_preference: which unit type to prioritize building";
+    }
+
+    private String queryOllamaAPI(String prompt) throws Exception {
+        URL url = new URL(OLLAMA_HOST + "/api/generate");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(30000);
+
+        JsonObject body = new JsonObject();
+        body.addProperty("model", OLLAMA_MODEL);
+        body.addProperty("prompt", prompt);
+        body.addProperty("format", "json");
+        body.addProperty("stream", false);
+
+        OutputStream os = conn.getOutputStream();
+        os.write(body.toString().getBytes("UTF-8"));
+        os.flush();
+        os.close();
+
+        int responseCode = conn.getResponseCode();
+        if (responseCode != 200) {
+            conn.disconnect();
+            return null;
+        }
+
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        reader.close();
+        conn.disconnect();
+
+        JsonObject ollamaResp = JsonParser.parseString(sb.toString()).getAsJsonObject();
+        return ollamaResp.has("response") ? ollamaResp.get("response").getAsString() : null;
+    }
+
+    private void parseLLMAdvice(String responseJson) {
+        try {
+            JsonObject advice = JsonParser.parseString(responseJson).getAsJsonObject();
+
+            if (advice.has("attack_bias")) {
+                llmAttackBias = Math.max(-3.0, Math.min(3.0,
+                        advice.get("attack_bias").getAsDouble()));
+            }
+            if (advice.has("military_bias")) {
+                llmMilitaryBias = Math.max(-3.0, Math.min(3.0,
+                        advice.get("military_bias").getAsDouble()));
+            }
+            if (advice.has("unit_preference")) {
+                String pref = advice.get("unit_preference").getAsString().toLowerCase();
+                if ("light".equals(pref) || "heavy".equals(pref)
+                        || "ranged".equals(pref) || "balanced".equals(pref)) {
+                    llmUnitPreference = pref;
+                }
+            }
+
+            System.out.println("[ChaseBot] LLM advice: attack=" + llmAttackBias +
+                    " military=" + llmMilitaryBias + " units=" + llmUnitPreference);
+        } catch (Exception e) {
+            System.err.println("[ChaseBot] Failed to parse LLM response: " + e.getMessage());
+        }
     }
 }
 
@@ -1478,8 +1628,17 @@ class AWorkDefense extends AwareAI{
 
     @Override
     protected UnitAction barracksBehavior(Unit u, Player p, GameState gs) {
-        if (p.getResources()>=lightType.cost)
-            return Train(u, lightType, gs);
+        int value = 0;
+        UnitType type = lightType;
+        UnitType[] types = new UnitType[] {lightType, heavyType, rangedType};
+        for(int i = 0; i < unitProduction.length; i++){
+            if(unitProduction[i] > value){
+                value = unitProduction[i];
+                type = types[i];
+            }
+        }
+        if (p.getResources()>=type.cost)
+            return Train(u, type, gs);
         return null;
     }
 
@@ -1802,8 +1961,17 @@ class AWorkRush extends AwareAI{
 
     @Override
     protected UnitAction barracksBehavior(Unit u, Player p, GameState gs) {
-        if (p.getResources()>=lightType.cost)
-            return Train(u, lightType, gs);
+        int value = 0;
+        UnitType type = lightType;
+        UnitType[] types = new UnitType[] {lightType, heavyType, rangedType};
+        for(int i = 0; i < unitProduction.length; i++){
+            if(unitProduction[i] > value){
+                value = unitProduction[i];
+                type = types[i];
+            }
+        }
+        if (p.getResources()>=type.cost)
+            return Train(u, type, gs);
         return null;
     }
 
