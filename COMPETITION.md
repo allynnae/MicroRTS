@@ -67,17 +67,19 @@ Modify the prompt in `src/ai/abstraction/ollama.java` to make your LLM agent win
 | `resources/config.properties` | Game settings and opponent selection |
 | `RunLoop.sh` | Run multiple games for testing |
 
-### Changing the Model
+### Model Selection Policy
 
-In `ollama.java` line 121:
+Submitters are welcome to **suggest a preferred model ID** in their agent code or in a comment/README. However, competition runs are executed on the organizers' server using locally available Ollama models. If your preferred model is not available on the server, your agent will be run with whatever model is available.
+
+**Current server model:** `llama3.1:8b` (Meta Llama 3.1 8B, ~5 GB — runs well on CPU and Apple Silicon).
+
+To specify your preferred model, set the default in your agent class:
+
 ```java
 static String MODEL = System.getenv().getOrDefault("OLLAMA_MODEL", "llama3.1:8b");
 ```
 
-Or use environment variable:
-```bash
-export OLLAMA_MODEL="qwen3:14b"
-```
+The `OLLAMA_MODEL` environment variable always takes precedence, so the organizers can override your default when running on the server. If your preferred model differs from what's available, note it in your submission README so organizers are aware.
 
 ### Changing the Opponent
 
