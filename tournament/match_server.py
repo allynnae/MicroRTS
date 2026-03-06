@@ -41,6 +41,7 @@ MAPS_DIR = PROJECT_ROOT / "maps"
 SUBMISSIONS_DIR = PROJECT_ROOT / "submissions"
 CONFIG_TEMPLATE = PROJECT_ROOT / "resources" / "config.properties"
 
+TRACES_DIR = PROJECT_ROOT / "tournament" / "traces"
 DEFAULT_MAP = "maps/8x8/basesWorkers8x8.xml"
 DEFAULT_MAX_CYCLES = 3000
 GAME_TIMEOUT = 300  # 5 minutes max per match
@@ -234,6 +235,18 @@ def parse_game_result(output):
                 result["final_tick"] = int(line.split(":")[1].strip())
             except ValueError:
                 pass
+        # RecordLLMGame uses different labels
+        elif line.startswith("Final tick:"):
+            try:
+                result["final_tick"] = int(line.split(":")[1].strip())
+            except ValueError:
+                pass
+        elif line.startswith("Winner: Player 0"):
+            result["winner"] = 0
+        elif line.startswith("Winner: Player 1"):
+            result["winner"] = 1
+        elif line.startswith("Result: Draw"):
+            result["winner"] = -1
     return result
 
 
@@ -246,16 +259,18 @@ def run_match(match_id):
         match["status"] = "running"
         match["started_at"] = time.time()
 
-    config_path = None
+    TRACES_DIR.mkdir(parents=True, exist_ok=True)
+    trace_prefix = str(TRACES_DIR / match_id)
+
     try:
-        config_path = write_config(
-            match["ai1"], match["ai2"],
-            match["map"], match["max_cycles"]
-        )
         classpath = f"{LIB_DIR}/*:{BIN_DIR}"
         cmd = [
             "java", "-cp", classpath,
-            "rts.MicroRTS", "-f", config_path
+            "tests.trace.RecordLLMGame",
+            match["ai1"], match["ai2"],
+            trace_prefix,
+            str(match["max_cycles"]),
+            match["map"],
         ]
 
         proc = subprocess.run(
@@ -268,6 +283,10 @@ def run_match(match_id):
 
         output = proc.stdout + proc.stderr
         result = parse_game_result(output)
+
+        # Check if trace JSON was saved
+        trace_json = trace_prefix + ".json"
+        has_trace = os.path.exists(trace_json)
 
         with matches_lock:
             match["status"] = "completed"
@@ -282,6 +301,7 @@ def run_match(match_id):
             else:
                 match["winner_label"] = "Draw"
             match["game_log"] = result["raw_output"]
+            match["has_trace"] = has_trace
 
     except subprocess.TimeoutExpired:
         with matches_lock:
@@ -297,8 +317,10 @@ def run_match(match_id):
             match["error"] = str(e)
             match["game_log"] = str(e)
     finally:
-        if config_path and os.path.exists(config_path):
-            os.unlink(config_path)
+        # Clean up XML trace (keep JSON for replay)
+        xml_trace = trace_prefix + ".xml"
+        if os.path.exists(xml_trace):
+            os.unlink(xml_trace)
         with running_lock:
             running_count -= 1
 
@@ -379,6 +401,25 @@ class MatchHandler(BaseHTTPRequestHandler):
         if path == "/api/maps":
             maps = discover_maps()
             self.send_json({"maps": maps, "default": DEFAULT_MAP})
+            return
+
+        if path.startswith("/api/trace/"):
+            match_id = path.split("/")[-1]
+            # Sanitize: only allow alphanumeric/dash to prevent path traversal
+            if not re.match(r'^[a-zA-Z0-9-]+$', match_id):
+                self.send_json({"error": "Invalid match ID"}, 400)
+                return
+            trace_path = TRACES_DIR / (match_id + ".json")
+            if not trace_path.exists():
+                self.send_json({"error": "Trace not found"}, 404)
+                return
+            content = trace_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
 
         if path.startswith("/api/match/"):

@@ -224,6 +224,91 @@
         .server-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
         .server-dot.online { background: var(--win); }
         .server-dot.offline { background: var(--loss); }
+
+        /* Tip box */
+        .tip-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+        .tip-box code { color: var(--accent); font-size: 0.8rem; }
+
+        /* Replay viewer */
+        .replay-panel {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+            margin-top: 1rem;
+            display: none;
+        }
+        .replay-panel.visible { display: block; }
+        .replay-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .replay-header h3 { margin: 0; font-size: 1rem; }
+        .replay-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .replay-controls button {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-primary);
+            cursor: pointer;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.85rem;
+            transition: background 0.15s;
+        }
+        .replay-controls button:hover { background: var(--border); }
+        .replay-controls button:disabled { color: var(--text-muted); cursor: default; }
+        .replay-tick {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-variant-numeric: tabular-nums;
+            min-width: 6rem;
+            text-align: center;
+        }
+        .replay-speed {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+        .replay-canvas-wrap {
+            display: flex;
+            justify-content: center;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem;
+        }
+        canvas#replay-canvas { image-rendering: pixelated; }
+        .replay-legend {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .legend-swatch {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            margin-right: 3px;
+            vertical-align: middle;
+        }
         .server-status-text { color: var(--text-muted); font-size: 0.8rem; }
 
         /* Match history */
@@ -281,6 +366,15 @@
             <a href="https://github.com/drchangliu/MicroRTS/blob/master/tournament/match_server.py" style="color: var(--accent); font-size: 0.8rem; margin-left: auto; text-decoration: none;">match_server.py</a>
         </div>
 
+        <div class="tip-box" id="server-tip">
+            <strong>Getting started:</strong> The match server runs locally on your machine.
+            <pre style="margin: 0.5rem 0 0; background: var(--bg-primary); padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto;"><code>git clone https://github.com/drchangliu/MicroRTS.git
+cd MicroRTS
+ant build            <span style="color:var(--text-muted)"># or: find src -name '*.java' > sources.list && javac -cp "lib/*:bin" -d bin @sources.list</span>
+python3 tournament/match_server.py --port 8080</code></pre>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">Then open <code style="background:var(--bg-primary);padding:0.1rem 0.3rem;border-radius:3px;">http://localhost:8080/match.html</code> in your browser.</span>
+        </div>
+
         <div class="match-grid">
             <div class="player-panel p1">
                 <h3>Player 1 (AI1)</h3>
@@ -318,6 +412,32 @@
             <div class="result-details" id="result-details"></div>
             <button class="log-toggle" id="log-toggle" style="display:none;">Show game log</button>
             <pre class="game-log" id="game-log"></pre>
+        </div>
+
+        <div class="replay-panel" id="replay-panel">
+            <div class="replay-header">
+                <h3>Game Replay</h3>
+                <div class="replay-controls">
+                    <button id="replay-start" title="Jump to start">&laquo;</button>
+                    <button id="replay-back" title="Step back">&lsaquo;</button>
+                    <button id="replay-play" title="Play/Pause">Play</button>
+                    <button id="replay-fwd" title="Step forward">&rsaquo;</button>
+                    <button id="replay-end" title="Jump to end">&raquo;</button>
+                    <span class="replay-tick" id="replay-tick">Tick 0 / 0</span>
+                    <button id="replay-slower" title="Slower">-</button>
+                    <span class="replay-speed" id="replay-speed">4x</span>
+                    <button id="replay-faster" title="Faster">+</button>
+                </div>
+            </div>
+            <div class="replay-canvas-wrap">
+                <canvas id="replay-canvas" width="480" height="480"></canvas>
+            </div>
+            <div class="replay-legend">
+                <span><span class="legend-swatch" style="background:#0C7BDC"></span> Player 1</span>
+                <span><span class="legend-swatch" style="background:#BF3682"></span> Player 2</span>
+                <span><span class="legend-swatch" style="background:#C2DFAE"></span> Resource</span>
+                <span><span class="legend-swatch" style="background:#666"></span> Wall</span>
+            </div>
         </div>
 
         <div class="history-panel" id="history-panel" style="display:none;">
@@ -411,6 +531,7 @@
         var gameLog = document.getElementById('game-log');
         var historyPanel = document.getElementById('history-panel');
         var historyList = document.getElementById('history-list');
+        var replayPanel = document.getElementById('replay-panel');
 
         function getServerUrl() {
             return serverUrlInput.value.replace(/\/+$/, '');
@@ -640,6 +761,13 @@
                 gameLog.textContent = match.game_log;
             }
 
+            // Load trace for replay if available
+            if (match.has_trace && match.id) {
+                loadTrace(match.id);
+            } else {
+                replayPanel.className = 'replay-panel';
+            }
+
             // Add to history
             addToHistory(match);
         }
@@ -694,6 +822,260 @@
             }
             historyList.innerHTML = html;
         }
+
+        // --- Replay Engine ---
+
+        var replayCanvas = document.getElementById('replay-canvas');
+        var replayCtx = replayCanvas.getContext('2d');
+        var replayTickLabel = document.getElementById('replay-tick');
+        var replaySpeedLabel = document.getElementById('replay-speed');
+        var traceData = null;     // Full trace JSON
+        var replayFrame = 0;      // Current entry index
+        var replayPlaying = false;
+        var replayTimer = null;
+        var replaySpeedIdx = 2;   // index into speeds array
+        var replaySpeeds = [1, 2, 4, 8, 16, 32];
+
+        // Colors matching PhysicalGameStatePanel.java
+        var COLORS = {
+            p0: '#0C7BDC',      // Player 0 - blue
+            p1: '#BF3682',      // Player 1 - magenta
+            resource: '#C2DFAE', // Resources - green
+            wall: '#555555',
+            bg: '#1a1a2e',
+            grid: '#2a2a3e',
+            light: '#D55E00',    // Light unit accent
+            ranged: '#0072B2',   // Ranged unit accent
+            heavy: '#F0E442',    // Heavy unit accent
+            hp: '#3fb950',
+            hpLost: '#f85149',
+        };
+
+        function loadTrace(matchId) {
+            replayPanel.className = 'replay-panel';
+            fetch(getServerUrl() + '/api/trace/' + matchId)
+                .then(function (r) {
+                    if (!r.ok) throw new Error('Trace not available');
+                    return r.json();
+                })
+                .then(function (data) {
+                    traceData = data;
+                    replayFrame = 0;
+                    replayPlaying = false;
+                    if (replayTimer) clearInterval(replayTimer);
+                    replayPanel.className = 'replay-panel visible';
+                    document.getElementById('replay-play').textContent = 'Play';
+                    drawFrame();
+                })
+                .catch(function () {
+                    replayPanel.className = 'replay-panel';
+                });
+        }
+
+        function drawFrame() {
+            if (!traceData || !traceData.entries || !traceData.entries[replayFrame]) return;
+            var entry = traceData.entries[replayFrame];
+            var pgs = entry.pgs;
+            var w = pgs.width;
+            var h = pgs.height;
+            var cellSize = Math.floor(Math.min(480 / w, 480 / h));
+            var canvasW = cellSize * w;
+            var canvasH = cellSize * h;
+            replayCanvas.width = canvasW;
+            replayCanvas.height = canvasH;
+
+            var ctx = replayCtx;
+
+            // Background
+            ctx.fillStyle = COLORS.bg;
+            ctx.fillRect(0, 0, canvasW, canvasH);
+
+            // Grid
+            ctx.strokeStyle = COLORS.grid;
+            ctx.lineWidth = 0.5;
+            for (var gx = 0; gx <= w; gx++) {
+                ctx.beginPath(); ctx.moveTo(gx * cellSize, 0); ctx.lineTo(gx * cellSize, canvasH); ctx.stroke();
+            }
+            for (var gy = 0; gy <= h; gy++) {
+                ctx.beginPath(); ctx.moveTo(0, gy * cellSize); ctx.lineTo(canvasW, gy * cellSize); ctx.stroke();
+            }
+
+            // Terrain (walls)
+            if (pgs.terrain) {
+                for (var ti = 0; ti < pgs.terrain.length; ti++) {
+                    if (pgs.terrain[ti] !== '0') {
+                        var tx = ti % w;
+                        var ty = Math.floor(ti / w);
+                        ctx.fillStyle = COLORS.wall;
+                        ctx.fillRect(tx * cellSize, ty * cellSize, cellSize, cellSize);
+                    }
+                }
+            }
+
+            // Units
+            var units = pgs.units || [];
+            for (var ui = 0; ui < units.length; ui++) {
+                var u = units[ui];
+                var ux = u.x * cellSize;
+                var uy = u.y * cellSize;
+                var pad = Math.max(1, cellSize * 0.1);
+                var uSize = cellSize - pad * 2;
+
+                // Pick color
+                var color;
+                if (u.player === 0) color = COLORS.p0;
+                else if (u.player === 1) color = COLORS.p1;
+                else color = COLORS.resource;
+
+                var type = (u.type || '').toLowerCase();
+
+                // Unit-type accent border
+                var accent = null;
+                if (type === 'light') accent = COLORS.light;
+                else if (type === 'ranged') accent = COLORS.ranged;
+                else if (type === 'heavy') accent = COLORS.heavy;
+
+                if (type === 'resource') {
+                    // Diamond for resources
+                    ctx.fillStyle = COLORS.resource;
+                    var cx = ux + cellSize / 2;
+                    var cy = uy + cellSize / 2;
+                    var r = uSize / 2;
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy);
+                    ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy);
+                    ctx.closePath(); ctx.fill();
+                    // Resource count
+                    if (u.resources > 0 && cellSize >= 20) {
+                        ctx.fillStyle = '#000';
+                        ctx.font = Math.max(8, cellSize * 0.3) + 'px sans-serif';
+                        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                        ctx.fillText(u.resources, cx, cy);
+                    }
+                } else if (type === 'base' || type === 'barracks') {
+                    // Square for buildings
+                    ctx.fillStyle = color;
+                    ctx.fillRect(ux + pad, uy + pad, uSize, uSize);
+                    if (accent) {
+                        ctx.strokeStyle = accent; ctx.lineWidth = 2;
+                        ctx.strokeRect(ux + pad, uy + pad, uSize, uSize);
+                    }
+                    // Label
+                    if (cellSize >= 20) {
+                        ctx.fillStyle = '#fff';
+                        ctx.font = 'bold ' + Math.max(8, cellSize * 0.3) + 'px sans-serif';
+                        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                        ctx.fillText(type === 'base' ? 'B' : 'K', ux + cellSize / 2, uy + cellSize / 2);
+                    }
+                } else {
+                    // Circle for mobile units
+                    var cx2 = ux + cellSize / 2;
+                    var cy2 = uy + cellSize / 2;
+                    var rad = uSize / 2;
+                    ctx.fillStyle = color;
+                    ctx.beginPath(); ctx.arc(cx2, cy2, rad, 0, Math.PI * 2); ctx.fill();
+                    if (accent) {
+                        ctx.strokeStyle = accent; ctx.lineWidth = 2;
+                        ctx.beginPath(); ctx.arc(cx2, cy2, rad, 0, Math.PI * 2); ctx.stroke();
+                    }
+                    // Unit type letter
+                    if (cellSize >= 20) {
+                        ctx.fillStyle = '#fff';
+                        ctx.font = 'bold ' + Math.max(8, cellSize * 0.3) + 'px sans-serif';
+                        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                        var letter = type.charAt(0).toUpperCase();
+                        if (type === 'worker') letter = 'W';
+                        ctx.fillText(letter, cx2, cy2);
+                    }
+                }
+
+                // HP bar (for units with player)
+                if (u.player >= 0 && cellSize >= 12) {
+                    // Look up max HP from utt
+                    var maxHp = getMaxHp(u.type);
+                    if (maxHp > 0 && u.hitpoints < maxHp) {
+                        var barW = uSize;
+                        var barH = Math.max(2, cellSize * 0.08);
+                        var barX = ux + pad;
+                        var barY = uy + pad - barH - 1;
+                        var hpRatio = u.hitpoints / maxHp;
+                        ctx.fillStyle = COLORS.hpLost;
+                        ctx.fillRect(barX, barY, barW, barH);
+                        ctx.fillStyle = COLORS.hp;
+                        ctx.fillRect(barX, barY, barW * hpRatio, barH);
+                    }
+                }
+            }
+
+            // Tick label
+            var totalTicks = traceData.entries.length > 0
+                ? traceData.entries[traceData.entries.length - 1].time : 0;
+            replayTickLabel.textContent = 'Tick ' + entry.time + ' / ' + totalTicks;
+        }
+
+        function getMaxHp(typeName) {
+            if (!traceData || !traceData.utt || !traceData.utt.unitTypes) return 0;
+            for (var i = 0; i < traceData.utt.unitTypes.length; i++) {
+                if (traceData.utt.unitTypes[i].name === typeName) {
+                    return traceData.utt.unitTypes[i].hp || 0;
+                }
+            }
+            return 0;
+        }
+
+        function replayStep(dir) {
+            if (!traceData) return;
+            replayFrame = Math.max(0, Math.min(traceData.entries.length - 1, replayFrame + dir));
+            drawFrame();
+        }
+
+        function replayToggle() {
+            if (!traceData) return;
+            replayPlaying = !replayPlaying;
+            document.getElementById('replay-play').textContent = replayPlaying ? 'Pause' : 'Play';
+            if (replayPlaying) {
+                replayRunTimer();
+            } else if (replayTimer) {
+                clearInterval(replayTimer);
+                replayTimer = null;
+            }
+        }
+
+        function replayRunTimer() {
+            if (replayTimer) clearInterval(replayTimer);
+            var ms = Math.max(16, 1000 / replaySpeeds[replaySpeedIdx]);
+            replayTimer = setInterval(function () {
+                if (replayFrame >= traceData.entries.length - 1) {
+                    replayPlaying = false;
+                    document.getElementById('replay-play').textContent = 'Play';
+                    clearInterval(replayTimer);
+                    replayTimer = null;
+                    return;
+                }
+                replayFrame++;
+                drawFrame();
+            }, ms);
+        }
+
+        document.getElementById('replay-play').addEventListener('click', replayToggle);
+        document.getElementById('replay-fwd').addEventListener('click', function () { replayStep(1); });
+        document.getElementById('replay-back').addEventListener('click', function () { replayStep(-1); });
+        document.getElementById('replay-start').addEventListener('click', function () {
+            replayFrame = 0; drawFrame();
+        });
+        document.getElementById('replay-end').addEventListener('click', function () {
+            if (traceData) { replayFrame = traceData.entries.length - 1; drawFrame(); }
+        });
+        document.getElementById('replay-faster').addEventListener('click', function () {
+            replaySpeedIdx = Math.min(replaySpeeds.length - 1, replaySpeedIdx + 1);
+            replaySpeedLabel.textContent = replaySpeeds[replaySpeedIdx] + 'x';
+            if (replayPlaying) replayRunTimer();
+        });
+        document.getElementById('replay-slower').addEventListener('click', function () {
+            replaySpeedIdx = Math.max(0, replaySpeedIdx - 1);
+            replaySpeedLabel.textContent = replaySpeeds[replaySpeedIdx] + 'x';
+            if (replayPlaying) replayRunTimer();
+        });
 
         // --- Init ---
         // Populate dropdowns immediately with static agent list
