@@ -12,6 +12,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import rts.GameState;
 import rts.PlayerAction;
 import rts.units.UnitTypeTable;
@@ -19,8 +24,7 @@ import rts.units.Unit;
 import rts.PhysicalGameState;
 
 /**
- * NickMCTS: An adaptive NaiveMCTS agent that uses a local LLM (Ollama)
- * to dynamically adjust evaluation weights based on game state.
+ * NickMCTS: An adaptive NaiveMCTS agent using environment-configurable LLM strategy.
  */
 public class NickMCTS extends NaiveMCTS {
     private UnitTypeTable utt;
@@ -28,10 +32,9 @@ public class NickMCTS extends NaiveMCTS {
     private int lastUpdateFrame = -1;
 
     public NickMCTS(UnitTypeTable utt) {
-        // Initializing with your custom MyEvaluation
         super(100, -1, 100, 10, 0.3f, 0.0f, 0.4f,
               new WorkerRush(utt), 
-              new MyEvaluation(utt, null), // Controller assigned below
+              new MyEvaluation(utt, null), 
               true);
         this.utt = utt;
         ((MyEvaluation)this.ef).setController(this.controller);
@@ -39,7 +42,6 @@ public class NickMCTS extends NaiveMCTS {
 
     @Override
     public PlayerAction getAction(int player, GameState gs) throws Exception {
-        // Consult the "General" (LLM) every 400 frames
         if (gs.getTime() % 400 == 0 && gs.getTime() != lastUpdateFrame) {
             lastUpdateFrame = gs.getTime();
             controller.updateStrategy(gs, player);
@@ -58,12 +60,11 @@ public class NickMCTS extends NaiveMCTS {
     }
 }
 
-/**
- * Manages asynchronous communication with Ollama.
- * Uses a non-blocking approach to ensure the tournament clock never times out.
- */
 class StrategyController {
-    // Volatile ensures the MCTS threads see the latest updates from the LLM thread
+    // Standard environment variables for tournament configuration
+    private static final String OLLAMA_HOST = System.getenv().getOrDefault("OLLAMA_HOST", "http://localhost:11434");
+    private static final String OLLAMA_MODEL = System.getenv().getOrDefault("OLLAMA_MODEL", "llama3.1:8b");
+    
     public volatile float aggression = 1.0f;
     public volatile float threatWeight = 1.0f;
     public volatile float resourceWeight = 0.2f;
@@ -71,16 +72,24 @@ class StrategyController {
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofMillis(500))
             .build();
+    private final Gson gson = new Gson();
 
     public void updateStrategy(GameState gs, int player) {
         String stateSummary = summarizeState(gs, player);
         String prompt = "MicroRTS state: " + stateSummary + 
                         ". Respond ONLY JSON: {\"agg\":float(0.5-2), \"thr\":float(0-5), \"res\":float(0-1)}";
 
-        String jsonBody = "{\"model\": \"llama3\", \"prompt\": \"" + prompt + "\", \"stream\": false, \"format\": \"json\"}";
+        // Build JSON safely using a Map and Gson to prevent injection
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("model", OLLAMA_MODEL);
+        payload.put("prompt", prompt);
+        payload.put("stream", false);
+        payload.put("format", "json");
+        
+        String jsonBody = gson.toJson(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:11434/api/generate"))
+                .uri(URI.create(OLLAMA_HOST + "/api/generate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                 .build();
@@ -88,7 +97,7 @@ class StrategyController {
         client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
               .thenApply(HttpResponse::body)
               .thenAccept(this::parseAndApply)
-              .exceptionally(e -> null); // Silently fail if Ollama is missing
+              .exceptionally(e -> null);
     }
 
     private String summarizeState(GameState gs, int player) {
@@ -113,21 +122,17 @@ class StrategyController {
         return new int[]{w, c, b, br};
     }
 
-    private void parseAndApply(String response) {
+    private void parseAndApply(String responseBody) {
         try {
-            // Manual extraction to avoid external JSON libraries
-            this.aggression = extract(response, "\"agg\"");
-            this.threatWeight = extract(response, "\"thr\"");
-            this.resourceWeight = extract(response, "\"res\"");
-        } catch (Exception e) { /* Keep current weights */ }
-    }
+            // Ollama returns a wrapper JSON; the actual model output is in the "response" field
+            JsonObject topObj = JsonParser.parseString(responseBody).getAsJsonObject();
+            String modelOutput = topObj.get("response").getAsString();
+            JsonObject strategy = JsonParser.parseString(modelOutput).getAsJsonObject();
 
-    private float extract(String json, String key) {
-        int i = json.indexOf(key);
-        int start = json.indexOf(":", i) + 1;
-        int end = json.indexOf(",", start);
-        if (end == -1) end = json.indexOf("}", start);
-        return Float.parseFloat(json.substring(start, end).replace("\"", "").trim());
+            if (strategy.has("agg")) this.aggression = strategy.get("agg").getAsFloat();
+            if (strategy.has("thr")) this.threatWeight = strategy.get("thr").getAsFloat();
+            if (strategy.has("res")) this.resourceWeight = strategy.get("res").getAsFloat();
+        } catch (Exception e) { /* Keep current weights */ }
     }
 }
 
@@ -142,7 +147,6 @@ class MyEvaluation extends LanchesterEvaluationFunction {
 
     @Override
     public float evaluate(int maxplayer, int minplayer, GameState gs) {
-        // If controller is null or Ollama fails, use reasonable defaults
         float agg = (sc != null) ? sc.aggression : 1.0f;
         float thr = (sc != null) ? sc.threatWeight : 1.0f;
         float res = (sc != null) ? sc.resourceWeight : 0.2f;
