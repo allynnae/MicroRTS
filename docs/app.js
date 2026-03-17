@@ -5,6 +5,20 @@
 
     var DATA_URL = 'data/tournament_results.json';
     var ANCHORS = ['RandomBiasedAI', 'HeavyRush', 'LightRush', 'WorkerRush', 'Tiamat', 'CoacAI'];
+    var ANCHOR_CLASSES = {
+        'RandomBiasedAI': 'ai.RandomBiasedAI',
+        'HeavyRush': 'ai.abstraction.HeavyRush',
+        'LightRush': 'ai.abstraction.LightRush',
+        'WorkerRush': 'ai.abstraction.WorkerRush',
+        'Tiamat': 'ai.competition.tiamat.Tiamat',
+        'CoacAI': 'ai.coac.CoacAI'
+    };
+    // Fallback mapping from agent type keywords in display_name to Java classes
+    var AGENT_TYPE_CLASSES = {
+        'PureLLM': 'ai.abstraction.ollama',
+        'Hybrid': 'ai.abstraction.HybridLLMRush',
+        'Search+LLM': 'ai.mcts.llmguided.LLMInformedMCTS'
+    };
     var GRADE_ORDER = { 'A+': 0, 'A': 1, 'B': 2, 'C': 3, 'D': 4, 'F': 5 };
 
     // State
@@ -13,6 +27,7 @@
     var benchmarkEntries = [];
     var historyEntries = [];
     var dataLoaded = false;
+    var expandedRows = {}; // tableId -> expanded index (or null)
 
     // --- Utilities ---
 
@@ -188,12 +203,118 @@
         }
     }
 
+    // --- Detail panel ---
+
+    function guessAgentClass(entry) {
+        if (entry.agent_class) return entry.agent_class;
+        // Fallback: try to match agent type from display_name e.g. "model (Search+LLM)"
+        var name = entry.display_name || '';
+        for (var key in AGENT_TYPE_CLASSES) {
+            if (AGENT_TYPE_CLASSES.hasOwnProperty(key) && name.indexOf(key) !== -1) {
+                return AGENT_TYPE_CLASSES[key];
+            }
+        }
+        return '';
+    }
+
+    function renderDetailPanel(entry) {
+        var opponents = entry.opponents || {};
+        var agentClass = guessAgentClass(entry);
+        var map = entry.map || 'maps/8x8/basesWorkers8x8.xml';
+        var html = '<div class="detail-panel">';
+        html += '<h4>Games for ' + escapeHtml(entry.display_name) + '</h4>';
+        html += '<div class="game-cards">';
+
+        for (var i = 0; i < ANCHORS.length; i++) {
+            var anchorName = ANCHORS[i];
+            var data = opponents[anchorName];
+            var anchorClass = ANCHOR_CLASSES[anchorName] || '';
+
+            html += '<div class="game-card">';
+            html += '<div class="opponent-name">vs ' + escapeHtml(anchorName) + '</div>';
+
+            if (data) {
+                var w = data.wins || 0;
+                var d = data.draws || 0;
+                var l = data.losses || 0;
+                var badgeCls = 'badge-skip';
+                var badgeText = 'N/A';
+                if (w > 0) { badgeCls = 'badge-win'; badgeText = w + 'W/' + d + 'D/' + l + 'L'; }
+                else if (l > 0) { badgeCls = 'badge-loss'; badgeText = w + 'W/' + d + 'D/' + l + 'L'; }
+                else if (d > 0) { badgeCls = 'badge-draw'; badgeText = w + 'W/' + d + 'D/' + l + 'L'; }
+                html += '<span class="result-badge ' + badgeCls + '">' + badgeText + '</span>';
+
+                var pts = data.weighted_points != null ? data.weighted_points : '?';
+                html += '<div class="game-pts">' + pts + ' pts</div>';
+            } else {
+                html += '<span class="result-badge badge-skip">--</span>';
+                html += '<div class="game-pts">not played</div>';
+            }
+
+            if (agentClass && anchorClass) {
+                var replayUrl = 'match.html?ai1=' + encodeURIComponent(agentClass) +
+                    '&ai2=' + encodeURIComponent(anchorClass) +
+                    '&map=' + encodeURIComponent(map);
+                html += '<a class="replay-btn" href="' + replayUrl + '">Run Match</a>';
+            }
+
+            html += '</div>';
+        }
+
+        html += '</div></div>';
+        return html;
+    }
+
+    function toggleDetail(tableId, idx, filteredEntries) {
+        var tbody = document.querySelector('#' + tableId + ' tbody');
+        if (!tbody) return;
+
+        // Find existing detail row for this table
+        var existing = tbody.querySelector('tr.detail-row');
+        var existingIdx = expandedRows[tableId];
+
+        // Remove existing detail row
+        if (existing) {
+            var prevRow = existing.previousElementSibling;
+            if (prevRow) prevRow.classList.remove('active-row');
+            existing.parentNode.removeChild(existing);
+            expandedRows[tableId] = null;
+        }
+
+        // If clicking same row, just collapse
+        if (existingIdx === idx) return;
+
+        // Find the clicked row (idx-th data row in tbody)
+        var rows = tbody.querySelectorAll('tr:not(.detail-row)');
+        if (idx >= rows.length) return;
+        var clickedRow = rows[idx];
+        clickedRow.classList.add('active-row');
+
+        // Insert detail row after clicked row
+        var detailRow = document.createElement('tr');
+        detailRow.className = 'detail-row';
+        var colCount = clickedRow.children.length;
+        var td = document.createElement('td');
+        td.setAttribute('colspan', colCount);
+        td.innerHTML = renderDetailPanel(filteredEntries[idx].raw);
+        detailRow.appendChild(td);
+
+        if (clickedRow.nextSibling) {
+            tbody.insertBefore(detailRow, clickedRow.nextSibling);
+        } else {
+            tbody.appendChild(detailRow);
+        }
+
+        expandedRows[tableId] = idx;
+    }
+
     // --- Render functions ---
 
     function renderLeaderboard() {
         var tbody = document.querySelector('#leaderboard-table tbody');
         if (!tbody || !dataLoaded) return;
         tbody.innerHTML = '';
+        expandedRows['leaderboard-table'] = null;
 
         var filters = getFilterValues('leaderboard');
         var entries = [];
@@ -209,9 +330,11 @@
             entries = sortEntries(entries, state.key, state.type, state.dir);
         }
 
+        var filteredRef = entries;
         for (var j = 0; j < entries.length; j++) {
             var entry = entries[j].raw;
             var row = document.createElement('tr');
+            row.setAttribute('data-idx', j);
             var displayRank = state ? (j + 1) : entries[j]._sortData.rank;
             var html = '<td class="rank-cell">' + displayRank + '</td>';
             html += '<td>' + escapeHtml(entry.display_name) + '</td>';
@@ -222,6 +345,11 @@
                 html += opponentCell(entry.opponents, ANCHORS[k]);
             }
             row.innerHTML = html;
+            (function (idx) {
+                row.addEventListener('click', function () {
+                    toggleDetail('leaderboard-table', idx, filteredRef);
+                });
+            })(j);
             tbody.appendChild(row);
         }
 
@@ -232,6 +360,7 @@
         var tbody = document.querySelector('#benchmarks-table tbody');
         if (!tbody || !dataLoaded) return;
         tbody.innerHTML = '';
+        expandedRows['benchmarks-table'] = null;
 
         var filters = getFilterValues('benchmarks');
         var entries = [];
@@ -247,9 +376,11 @@
             entries = sortEntries(entries, state.key, state.type, state.dir);
         }
 
+        var filteredRef = entries;
         for (var j = 0; j < entries.length; j++) {
             var entry = entries[j].raw;
             var row = document.createElement('tr');
+            row.setAttribute('data-idx', j);
             var src = entry.source || 'unknown';
             row.innerHTML =
                 '<td>' + escapeHtml(entry.display_name) + '</td>' +
@@ -257,6 +388,11 @@
                 '<td>' + gradeBadge(entry.grade) + '</td>' +
                 '<td><span class="source-badge">' + escapeHtml(src) + '</span></td>' +
                 '<td>' + formatDate(entry.date) + '</td>';
+            (function (idx) {
+                row.addEventListener('click', function () {
+                    toggleDetail('benchmarks-table', idx, filteredRef);
+                });
+            })(j);
             tbody.appendChild(row);
         }
 
@@ -319,6 +455,7 @@
         var tbody = document.querySelector('#history-table tbody');
         if (!tbody || !dataLoaded) return;
         tbody.innerHTML = '';
+        expandedRows['history-table'] = null;
 
         var filters = getFilterValues('history');
         var entries = [];
@@ -334,9 +471,11 @@
             entries = sortEntries(entries, state.key, state.type, state.dir);
         }
 
+        var filteredRef = entries;
         for (var j = 0; j < entries.length; j++) {
             var entry = entries[j].raw;
             var row = document.createElement('tr');
+            row.setAttribute('data-idx', j);
             var src = entry.source || 'unknown';
             row.innerHTML =
                 '<td>' + formatDate(entry.date) + '</td>' +
@@ -345,6 +484,11 @@
                 '<td>' + gradeBadge(entry.grade) + '</td>' +
                 '<td><span class="source-badge">' + escapeHtml(src) + '</span></td>' +
                 '<td>' + escapeHtml(entry.map || '--') + '</td>';
+            (function (idx) {
+                row.addEventListener('click', function () {
+                    toggleDetail('history-table', idx, filteredRef);
+                });
+            })(j);
             tbody.appendChild(row);
         }
 

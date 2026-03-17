@@ -455,9 +455,17 @@ def run_tournament(games_per_pair=1, skip_h2h=False, submissions_dir="submission
                 meta = info["metadata"]
                 break
 
+        # Find the fqcn for this team
+        team_fqcn = ""
+        for fqcn, info in contestants.items():
+            if info["display_name"] == name:
+                team_fqcn = fqcn
+                break
+
         team_results.append({
             "team_name": meta["team_name"] if meta else name,
             "display_name": name,
+            "agent_class": team_fqcn,
             "model_provider": meta.get("model_provider", "unknown") if meta else "unknown",
             "model_name": meta.get("model_name", "unknown") if meta else "unknown",
             "score": score,

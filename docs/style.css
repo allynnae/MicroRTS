@@ -361,6 +361,104 @@ tbody tr:hover {
     color: var(--text-muted);
 }
 
+/* Clickable table rows (leaderboard, benchmarks, history tables only) */
+#leaderboard-table tbody tr,
+#benchmarks-table tbody tr,
+#history-table tbody tr {
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+tr.detail-row {
+    cursor: default;
+}
+
+tr.detail-row td {
+    padding: 0;
+    border-bottom: 1px solid var(--border);
+}
+
+tr.detail-row:hover {
+    background: inherit;
+}
+
+tr.active-row {
+    background: var(--bg-secondary);
+}
+
+/* Detail panel (expanded below a clicked row) */
+.detail-panel {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 0.5rem 0.75rem;
+}
+
+.detail-panel h4 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.game-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.game-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    min-width: 160px;
+    flex: 0 1 auto;
+}
+
+.game-card .opponent-name {
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+}
+
+.game-card .result-badge {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+}
+
+.game-card .result-badge.badge-win { background: var(--win); color: #000; }
+.game-card .result-badge.badge-loss { background: var(--loss); color: #000; }
+.game-card .result-badge.badge-draw { background: var(--draw); color: #000; }
+.game-card .result-badge.badge-skip { background: var(--bg-tertiary); color: var(--text-muted); }
+
+.game-card .game-pts {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+}
+
+.replay-btn {
+    display: inline-block;
+    padding: 0.25rem 0.6rem;
+    background: var(--accent);
+    color: #000;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.15s;
+}
+
+.replay-btn:hover {
+    background: var(--accent-hover);
+    text-decoration: none;
+}
+
 /* Source badge */
 .source-badge {
     display: inline-block;
