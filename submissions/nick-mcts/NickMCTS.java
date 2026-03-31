@@ -1,6 +1,6 @@
 package ai.mcts.submissions.nick_mcts;
 
-import ai.abstraction.WorkerRush;
+import ai.mayari.Mayari; 
 import ai.core.AI;
 import ai.core.ParameterSpecification;
 import ai.evaluation.LanchesterEvaluationFunction;
@@ -29,30 +29,47 @@ public class NickMCTS extends NaiveMCTS {
     private int lastUpdateFrame = -1;
 
     public NickMCTS(UnitTypeTable utt) {
-        /* - Search Depth: 50 (to see the victory condition)
-           - Epsilon: 0.02f (to reduce random wandering)
+        /* - Time Budget: 160ms
+           - Max Iterations: -1 (Use full time)
+           - Max Depth: 50
+           - Playout Policy: Mayari (CRITICAL: Fixes the WorkerRush/Harvest NullPointerException)
         */
         super(160, -1, 100, 50, 0.02f, 0.0f, 0.4f,
-              new WorkerRush(utt), 
+              new Mayari(utt), 
               new MyEvaluation(utt, null), 
               true);
         this.utt = utt;
+        // Connect the LLM strategy controller to the evaluation function
         ((MyEvaluation)this.ef).setController(this.controller);
     }
 
     @Override
     public PlayerAction getAction(int player, GameState gs) throws Exception {
-        // Update strategy every 200 frames for responsiveness
+        long startTime = System.currentTimeMillis();
+
+        // Update strategy via LLM every 200 frames
         if (gs != null && gs.getTime() % 200 == 0 && gs.getTime() != lastUpdateFrame) {
             lastUpdateFrame = gs.getTime();
             controller.updateStrategy(gs, player);
         }
-        return super.getAction(player, gs);
+
+        // Call the MCTS logic
+        PlayerAction pa = super.getAction(player, gs);
+
+        // Debug Performance Logging (Watch your terminal for these!)
+        long duration = System.currentTimeMillis() - startTime;
+        if (gs != null && gs.getTime() % 20 == 0) {
+            System.out.println(String.format("[NickMCTS] Frame: %d | Sims: %d | Time: %dms | Agg: %.2f", 
+                               gs.getTime(), this.m_iter, duration, controller.aggression));
+        }
+
+        return pa;
     }
 
     @Override
     public AI clone() {
-        return new NickMCTS(utt);
+        // Essential: MCTS requires a clean clone that uses the same UTT
+        return new NickMCTS(this.utt);
     }
 
     @Override
@@ -80,8 +97,7 @@ class StrategyController {
         
         String stateSummary = summarizeState(gs, player);
         String prompt = "MicroRTS Battle Context: " + stateSummary + 
-                        ". Task: Break the draw. If Me > En, set agg > 2.0 and off > 1.5. " +
-                        "If En > Me, set thr > 3.0. Respond ONLY JSON: " +
+                        ". Task: Break the draw. Respond ONLY JSON: " +
                         "{\"agg\":float(0.5-3), \"thr\":float(0-5), \"res\":float(0-1), \"off\":float(0-2)}";
 
         Map<String, Object> payload = new HashMap<>();
@@ -132,13 +148,14 @@ class StrategyController {
             if (!topObj.has("response")) return;
             
             String modelOutput = topObj.get("response").getAsString();
+            modelOutput = modelOutput.replaceAll("```json|```", "").trim();
             JsonObject strategy = JsonParser.parseString(modelOutput).getAsJsonObject();
 
-            if (strategy.has("agg") && strategy.get("agg").isJsonPrimitive()) this.aggression = strategy.get("agg").getAsFloat();
-            if (strategy.has("thr") && strategy.get("thr").isJsonPrimitive()) this.threatWeight = strategy.get("thr").getAsFloat();
-            if (strategy.has("res") && strategy.get("res").isJsonPrimitive()) this.resourceWeight = strategy.get("res").getAsFloat();
-            if (strategy.has("off") && strategy.get("off").isJsonPrimitive()) this.offensiveWeight = strategy.get("off").getAsFloat();
-        } catch (Exception e) { /* Fallback to existing weights */ }
+            if (strategy.has("agg")) this.aggression = strategy.get("agg").getAsFloat();
+            if (strategy.has("thr")) this.threatWeight = strategy.get("thr").getAsFloat();
+            if (strategy.has("res")) this.resourceWeight = strategy.get("res").getAsFloat();
+            if (strategy.has("off")) this.offensiveWeight = strategy.get("off").getAsFloat();
+        } catch (Exception e) { /* Persistence on failure */ }
     }
 }
 
@@ -210,7 +227,6 @@ class MyEvaluation extends LanchesterEvaluationFunction {
             }
         }
 
-        // Defensive check: If no enemy units remain, we've won or they are invisible
         if (enemyTarget == null) return 0;
 
         for (Unit u : pgs.getUnits()) {
