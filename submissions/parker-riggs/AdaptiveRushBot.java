@@ -2,7 +2,7 @@ package ai.abstraction.submissions.parker_riggs;
 
 import ai.abstraction.HeavyRush;
 import ai.abstraction.LightRush;
-import ai.abstraction.WorkerRush;
+import ai.abstraction.RangedRush;
 import ai.core.AI;
 import ai.core.ParameterSpecification;
 import java.util.ArrayList;
@@ -23,8 +23,9 @@ import rts.units.UnitTypeTable;
 /**
  * AdaptiveRushBot picks between three scripted rush strategies each game and
  * tries to counter whatever the opponent is building. The three options are
- * WorkerRush (fast swarm of worker units), LightRush (cheap fast combat units),
- * and HeavyRush (slower but tankier units that beat Light in direct fights).
+ * RangedRush (long-range units that excel on larger maps), LightRush (cheap
+ * fast combat units), and HeavyRush (slower but tankier units that beat Light
+ * in direct fights).
  *
  * Strategy selection works in two layers. First it asks a local LLM (Ollama)
  * for a recommendation based on a compact summary of the game state. If the LLM
@@ -32,14 +33,14 @@ import rts.units.UnitTypeTable;
  * back to a hand-written counter-strategy heuristic so it always has something
  * reasonable to do regardless of whether Ollama is running.
  *
- * The general counter triangle is: Light beats Worker, Heavy beats Light,
- * Worker can sometimes pressure Heavy through sheer numbers early on.
+ * The general counter triangle is: Light beats Ranged (closes gap quickly),
+ * Heavy beats Light, Ranged counters Heavy (kiting from distance).
  */
 public class AdaptiveRushBot extends AI {
 
     // The three strategies the bot can pick between. Each maps to a different
     // scripted AI delegate that handles the actual unit micro for that style.
-    private enum Strategy { WORKER_RUSH, LIGHT_RUSH, HEAVY_RUSH }
+    private enum Strategy { RANGED_RUSH, LIGHT_RUSH, HEAVY_RUSH }
 
     // How many ticks into the game before we default to a military strategy
     // if nothing else has triggered a switch yet. On 8x8 maps this is used as-is;
@@ -76,7 +77,7 @@ public class AdaptiveRushBot extends AI {
 
     // The three delegate scripted AIs. We hand off to whichever one we picked
     // and let it handle all the unit-level micro for that strategy.
-    private final WorkerRush workerRush;
+    private final RangedRush rangedRush;
     private final LightRush lightRush;
     private final HeavyRush heavyRush;
 
@@ -104,8 +105,7 @@ public class AdaptiveRushBot extends AI {
 
     // The strategy we are currently running. This gets updated each time we get
     // a fresh LLM answer or run the heuristic, and stays fixed between polls so
-    // the bot does not jitter. We default to LIGHT_RUSH because it beats a pure
-    // WorkerRush opponent from tick zero with no information needed.
+    // the bot does not jitter. We default to LIGHT_RUSH as a safe opener.
     private Strategy cachedStrategy = Strategy.LIGHT_RUSH;
 
     /**
@@ -116,7 +116,7 @@ public class AdaptiveRushBot extends AI {
      */
     public AdaptiveRushBot(UnitTypeTable unitTypeTable) {
         this.unitTypeTable = unitTypeTable;
-        this.workerRush = new WorkerRush(unitTypeTable);
+        this.rangedRush = new RangedRush(unitTypeTable);
         this.lightRush = new LightRush(unitTypeTable);
         this.heavyRush = new HeavyRush(unitTypeTable);
         this.httpClient = HttpClient.newBuilder().connectTimeout(LLM_TIMEOUT).build();
@@ -131,7 +131,7 @@ public class AdaptiveRushBot extends AI {
      */
     @Override
     public void reset() {
-        workerRush.reset();
+        rangedRush.reset();
         lightRush.reset();
         heavyRush.reset();
         lastLLMConsultTime = -1000;
@@ -160,7 +160,7 @@ public class AdaptiveRushBot extends AI {
             Strategy strategy = decideStrategy(player, gameState);
             switch (strategy) {
                 case HEAVY_RUSH: return heavyRush.getAction(player, gameState);
-                case WORKER_RUSH: return workerRush.getAction(player, gameState);
+                case RANGED_RUSH: return rangedRush.getAction(player, gameState);
                 default: return lightRush.getAction(player, gameState);
             }
         }
@@ -261,9 +261,9 @@ public class AdaptiveRushBot extends AI {
                 llmConsultSuccesses++;
                 return Strategy.LIGHT_RUSH;
             }
-            if (normalized.contains("WORKER_RUSH") || normalized.contains("WORKERRUSH")) {
+            if (normalized.contains("RANGED_RUSH") || normalized.contains("RANGEDRUSH")) {
                 llmConsultSuccesses++;
-                return Strategy.WORKER_RUSH;
+                return Strategy.RANGED_RUSH;
             }
             // Single keyword fallback for models that drop the underscore or add extra words.
             if (normalized.contains("HEAVY")) {
@@ -274,9 +274,9 @@ public class AdaptiveRushBot extends AI {
                 llmConsultSuccesses++;
                 return Strategy.LIGHT_RUSH;
             }
-            if (normalized.contains("WORKER")) {
+            if (normalized.contains("RANGED")) {
                 llmConsultSuccesses++;
-                return Strategy.WORKER_RUSH;
+                return Strategy.RANGED_RUSH;
             }
             // Could not extract a usable token from the response.
             return null;
@@ -381,12 +381,13 @@ public class AdaptiveRushBot extends AI {
      */
     private String buildPrompt(StrategySummary s, int time) {
         int enemyMilitary = s.enemyLightUnits + s.enemyHeavyUnits + s.enemyOtherCombat;
-        return "You are selecting a MicroRTS strategy. Reply with exactly one token: WORKER_RUSH, LIGHT_RUSH, or HEAVY_RUSH.\n"
+        return "You are selecting a MicroRTS strategy. Reply with exactly one token: RANGED_RUSH, LIGHT_RUSH, or HEAVY_RUSH.\n"
                 + "Counter-strategy rules:\n"
-                + "- LIGHT_RUSH counters WORKER_RUSH (Light units destroy Workers cheaply).\n"
+                + "- LIGHT_RUSH counters RANGED_RUSH (Light units close the gap and beat Ranged).\n"
                 + "- HEAVY_RUSH counters LIGHT_RUSH (Heavy units win direct combat vs Light).\n"
-                + "- WORKER_RUSH is fast early pressure with no dedicated military.\n"
+                + "- RANGED_RUSH counters HEAVY_RUSH (Ranged kite Heavy from distance; also strong on large maps).\n"
                 + "Choose based on what the enemy is building. Prefer responding to visible enemy composition.\n"
+                + "On large maps (width >= 16) prefer RANGED_RUSH as the default opener.\n"
                 + "State:\n"
                 + "time=" + time + "\n"
                 + "map_width=" + s.mapWidth + " map_height=" + s.mapHeight + "\n"
@@ -530,20 +531,19 @@ public class AdaptiveRushBot extends AI {
      * 4. If the enemy has Heavy units on the field, Light is not a great answer
      *    but it is faster than Worker and at least applies pressure.
      *
-     * 5. If the enemy appears to be running a pure WorkerRush with no dedicated
+     * 5. If the enemy appears to be running a pure worker swarm with no dedicated
      *    military, LightRush shreds workers very efficiently.
      *
      * 6. If enemy attackers are already close to our base we pick LightRush
      *    for the fastest possible military response.
      *
      * 7. Once we have enough workers to sustain economy we stop spamming workers
-     *    and switch to military production appropriate for the map size.
+     *    and switch to military. On large maps prefer RangedRush for range advantage.
      *
      * 8. Past the time threshold for this map size we commit to a military
      *    strategy whether anything else triggered or not.
      *
-     * 9. Default to LightRush. It beats WorkerRush and is a reasonable opener
-     *    against any unknown opponent.
+     * 9. Default to LightRush. It is a safe opener against any unknown opponent.
      */
     private Strategy chooseStrategyHeuristic(int player, GameState gameState) {
         StrategySummary s = summarizeState(player, gameState);
@@ -566,8 +566,8 @@ public class AdaptiveRushBot extends AI {
         }
         if (s.enemyHeavyUnits > 0) {
             // Heavy beats Light in direct combat, but Light is at least fast and applies
-            // pressure. WorkerRush could occasionally out-harass slow Heavy units early,
-            // but Light is the safer general answer here.
+            // pressure. RangedRush could kite Heavy from distance, but Light is the safer
+            // general answer when we need to respond quickly.
             return Strategy.LIGHT_RUSH;
         }
 
@@ -578,18 +578,20 @@ public class AdaptiveRushBot extends AI {
         }
 
         // Rule 6: enemy attackers are already dangerously close to one of our bases.
+        // Use Light for the fastest possible defensive response.
         if (s.closestEnemyDistanceToBase <= ENEMY_PRESSURE_DISTANCE) {
             return Strategy.LIGHT_RUSH;
         }
 
         // Rule 7: we have enough workers to sustain the economy, time to go aggressive.
+        // On large maps prefer RangedRush for its superior range advantage across distance.
         if (s.workers >= WORKER_COUNT_THRESHOLD) {
-            return smallMap ? Strategy.LIGHT_RUSH : Strategy.HEAVY_RUSH;
+            return smallMap ? Strategy.LIGHT_RUSH : Strategy.RANGED_RUSH;
         }
 
         // Rule 8: we have passed the game-time threshold for committing to military.
         if (gameState.getTime() >= timeThreshold) {
-            return smallMap ? Strategy.LIGHT_RUSH : Strategy.HEAVY_RUSH;
+            return smallMap ? Strategy.LIGHT_RUSH : Strategy.RANGED_RUSH;
         }
 
         // Rule 9: no specific trigger fired, default to LightRush as a safe opener.
