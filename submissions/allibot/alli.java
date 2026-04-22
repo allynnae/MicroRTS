@@ -840,21 +840,7 @@ public class alli extends AIWithComputationBudget {
         return eBarracks == 0 && eCombat == 0 &&
                (eWorkers >= 3 || (eWorkers >= 2 && enemyAlreadyClose));
     }
-    
-    // Detect early worker-only aggression.
-    boolean isWorkerRush() {
-        // GameState exposes the current tick; PhysicalGameState does not.
-        if (_gs != null && _gs.getTime() > 600)
-            return false;
-        int eWorkers = _enemyWorkers.size();
-        int eBarracks = _enemyBarracks.size();
-        int eCombat = _enemyLights.size() + _enemyHeavies.size() + _enemyArchers.size();
-        int distToBase = closestEnemyWorkerDistanceToBase();
-        boolean enemyAlreadyClose = distToBase <= Math.max(6, _pgs.getWidth() / 2);
-        return eBarracks == 0 && eCombat == 0 &&
-               (eWorkers >= 3 || (eWorkers >= 2 && enemyAlreadyClose));
-    }
-    
+
     int harvestScore(Unit worker, List<Unit> basesRemain) {
         if (busy(worker) || worker.getResources() > 0)
             return Integer.MAX_VALUE;
